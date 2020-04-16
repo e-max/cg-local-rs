@@ -1,4 +1,4 @@
-use futures::{SinkExt, StreamExt};
+use futures::{join, SinkExt, Stream, StreamExt};
 use log::{error, info};
 use serde;
 use serde::{Deserialize, Serialize};
@@ -7,6 +7,7 @@ use std::io::{Error, ErrorKind};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::{accept_async, WebSocketStream};
 use tungstenite::protocol::Message;
+use tungstenite::Error as WsError;
 use tungstenite::Result as WsResult;
 
 const send_details: &'static str = r#"{"payload":{},"action":"send-details"}"#;
@@ -58,7 +59,22 @@ async fn accept_connection(stream: TcpStream) -> WsResult<()> {
     ws_stream.send(resp).await?;
     info!("Start listening");
 
-    while let Some(msg) = ws_stream.next().await {
+    let (mut writes, mut reader) = ws_stream.split();
+
+    join!(tokio::spawn(handle_incoming(reader)));
+
+    //read.forward(write)
+    //.await
+    //.expect("Failed to forward message");
+
+    Ok(())
+}
+
+async fn handle_incoming<S>(mut reader: S) -> WsResult<()>
+where
+    S: Stream<Item = Result<Message, WsError>> + Unpin,
+{
+    while let Some(msg) = reader.next().await {
         let msg = msg?;
         println!("msg = {:?}", msg);
         if msg.is_text() || msg.is_binary() {
@@ -66,10 +82,5 @@ async fn accept_connection(stream: TcpStream) -> WsResult<()> {
             println!(" msg is text of binary");
         }
     }
-
-    //read.forward(write)
-    //.await
-    //.expect("Failed to forward message");
-
     Ok(())
 }
