@@ -3,7 +3,8 @@ use log::{error, info};
 use serde;
 use serde::{Deserialize, Serialize};
 use serde_json;
-use std::io::{Error, ErrorKind};
+use std::borrow::Cow;
+use std::io;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::{accept_async, WebSocketStream};
 use tungstenite::protocol::Message;
@@ -26,6 +27,10 @@ enum Msg {
         #[serde(rename = "questionId")]
         question_id: u32,
     },
+    #[serde(rename = "app-ready")]
+    AppReady {},
+    #[serde(rename = "send-code")]
+    SendCode {},
 }
 
 #[tokio::main]
@@ -50,7 +55,7 @@ async fn main() -> Result<(), Error> {
     Ok(())
 }
 
-async fn accept_connection(stream: TcpStream) -> WsResult<()> {
+async fn accept_connection(stream: TcpStream) -> Result<(), Error> {
     let addr = stream.peer_addr()?;
     info!("addr {}", addr);
     let mut ws_stream = accept_async(stream).await?;
@@ -70,17 +75,53 @@ async fn accept_connection(stream: TcpStream) -> WsResult<()> {
     Ok(())
 }
 
-async fn handle_incoming<S>(mut reader: S) -> WsResult<()>
+async fn handle_incoming<S>(mut reader: S) -> Result<(), Error>
 where
     S: Stream<Item = Result<Message, WsError>> + Unpin,
 {
     while let Some(msg) = reader.next().await {
         let msg = msg?;
         println!("msg = {:?}", msg);
-        if msg.is_text() || msg.is_binary() {
-            //ws_stream.send(msg).await?;
-            println!(" msg is text of binary");
+        match msg {
+            Message::Text(txt) => handle_message(&txt)?,
+            _ => (),
         }
     }
     Ok(())
+}
+
+fn handle_message(s: &str) -> Result<(), Error> {
+    let m: Msg = serde_json::from_str(details)?;
+    match m {
+        Msg::Details { .. } => {
+            println!(" got details = {:?}", m);
+        }
+        _ => error!("Got unknown message {:?}", m),
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+enum Error {
+    WsError(WsError),
+    JsonError(serde_json::Error),
+    IO(io::Error),
+}
+
+impl From<WsError> for Error {
+    fn from(e: WsError) -> Error {
+        Error::WsError(e)
+    }
+}
+
+impl From<io::Error> for Error {
+    fn from(e: io::Error) -> Self {
+        Error::IO(e)
+    }
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(e: serde_json::Error) -> Self {
+        Error::JsonError(e)
+    }
 }
