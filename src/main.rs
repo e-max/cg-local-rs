@@ -5,6 +5,7 @@ use log::{debug, error, info};
 use serde;
 use serde::{Deserialize, Serialize};
 use serde_json;
+use std::env;
 use std::io;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -35,6 +36,13 @@ enum Msg {
 async fn main() -> Result<(), Error> {
     env_logger::init();
     info!("Hello, world!");
+    let args = env::args().collect::<Vec<String>>();
+    if args.len() < 2 {
+        panic!("Must pass a path to a file to monitor");
+    }
+
+    let file = &args[1];
+    println!("\x1B[31;1m file\x1B[0m = {:?}", file);
 
     let addr = "localhost:53135";
     let mut listener = TcpListener::bind(addr).await?;
