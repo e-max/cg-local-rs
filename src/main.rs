@@ -2,13 +2,18 @@ use env_logger;
 use futures::TryFutureExt;
 use futures::{try_join, Sink, SinkExt, Stream, StreamExt};
 use log::{debug, error, info};
+use notify::{watcher, DebouncedEvent, RecursiveMode, Watcher};
 use serde;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::env;
+use std::fs;
 use std::io;
+use std::path::Path;
+use std::sync::mpsc as blocking_mpsc;
+use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio_tungstenite::accept_async;
 use tungstenite::protocol::Message;
 use tungstenite::Error as WsError;
@@ -41,8 +46,19 @@ async fn main() -> Result<(), Error> {
         panic!("Must pass a path to a file to monitor");
     }
 
-    let file = &args[1];
-    println!("\x1B[31;1m file\x1B[0m = {:?}", file);
+    let path = Path::new(&args[1]);
+    println!("\x1B[31;1m file\x1B[0m = {:?}", path);
+    //let (tx, _) = broadcast::channel(16);
+    monitor_file(path);
+
+    //tokio::task::spawn_blocking(move || loop {
+    //match rx.recv() {
+    //Ok(event) => println!("{:?}", event),
+    //Err(e) => println!("watch error: {:?}", e),
+    //}
+    //});
+
+    //tokio::spawn(file_monitor(inot));
 
     let addr = "localhost:53135";
     let mut listener = TcpListener::bind(addr).await?;
@@ -53,6 +69,51 @@ async fn main() -> Result<(), Error> {
     }
     Ok(())
 }
+
+fn monitor_file<P: AsRef<Path> + Copy>(path: P) -> Result<(), Error> {
+    'main: loop {
+        if !path.as_ref().exists() {
+            panic!("File {} doesn't exists");
+        }
+        let (mut tx, mut rx) = blocking_mpsc::channel();
+        let mut watcher = watcher(tx, Duration::from_secs(1)).unwrap();
+        watcher.watch(path, RecursiveMode::Recursive).unwrap();
+        println!("CCC");
+
+        info!("run loop");
+        loop {
+            let ev = rx
+                .recv()
+                .map_err(|e| Error::FileMonitorError(format!("notify error {}", e)))?;
+            match ev {
+                DebouncedEvent::NoticeRemove(_) => {
+                    // Well file either removed or just an editor use Write and Move strategy
+                    // (like vim does). Check it
+                    if !path.as_ref().exists() {
+                        return Err(Error::FileMonitorError("File removed".to_owned()));
+                    }
+                    println!("\x1B[31;1m FILE UPDATED\x1B[0m");
+                    //everything seems fine. Let start from the beginning
+                    continue 'main;
+                }
+                DebouncedEvent::NoticeWrite(_) | DebouncedEvent::Write(_) => {
+                    println!("\x1B[31;1m FILE UPDATED\x1B[0m");
+                }
+                DebouncedEvent::Chmod(_) => {
+                    info!("Chmod on file");
+                }
+                _ => return Err(Error::FileMonitorError(format!("{:?}", ev))),
+            };
+        }
+    }
+}
+
+//async fn file_monitor<S: StreamExt + Unpin>(stream: S) -> Result<(), Error> {
+//while let Some(ev) = stream.next().await {
+//println!("\x1B[31;1m ev\x1B[0m = {:?}", ev);
+//}
+//Ok(())
+//}
 
 async fn accept_connection(stream: TcpStream) -> Result<(), Error> {
     let addr = stream.peer_addr()?;
@@ -120,6 +181,7 @@ enum Error {
     General(String),
     SendError(mpsc::error::SendError<Msg>),
     UnknownMessage(Msg),
+    FileMonitorError(String),
 }
 
 impl From<WsError> for Error {

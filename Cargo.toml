@@ -8,10 +8,11 @@ edition = "2018"
 
 [dependencies]
 tokio-tungstenite = "0.10.1"
-tokio = { version = "0.2", features = ["macros", "tcp", "sync"] }
+tokio = { version = "0.2", features = ["macros", "tcp", "sync", "blocking"] }
 log = "0.4.8"
 futures = "0.3.4"
 tungstenite = "0.10.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.51"
 env_logger = "0.7.1"
+notify = "4.0.15"
