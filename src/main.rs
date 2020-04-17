@@ -4,14 +4,12 @@ use log::{debug, error, info};
 use serde;
 use serde::{Deserialize, Serialize};
 use serde_json;
-use std::borrow::Cow;
 use std::io;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
-use tokio_tungstenite::{accept_async, WebSocketStream};
+use tokio_tungstenite::accept_async;
 use tungstenite::protocol::Message;
 use tungstenite::Error as WsError;
-use tungstenite::Result as WsResult;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "action", content = "payload")]
@@ -48,10 +46,10 @@ async fn main() -> Result<(), Error> {
 async fn accept_connection(stream: TcpStream) -> Result<(), Error> {
     let addr = stream.peer_addr()?;
     info!("addr {}", addr);
-    let mut ws_stream = accept_async(stream).await?;
+    let ws_stream = accept_async(stream).await?;
 
-    let (mut writer, mut reader) = ws_stream.split();
-    let (mut tx, mut rx) = mpsc::channel::<Msg>(10);
+    let (writer, reader) = ws_stream.split();
+    let (mut tx, rx) = mpsc::channel::<Msg>(10);
 
     info!("Send initial message");
 
@@ -76,13 +74,13 @@ where
         writer
             .send(Message::text(resp))
             .await
-            .map_err(|e| Error::General("Some error".to_owned()))?;
+            .map_err(|_| Error::General("Some error".to_owned()))?;
     }
 
     Ok(())
 }
 
-async fn handle_incoming<S>(mut tx: mpsc::Sender<Msg>, mut reader: S) -> Result<(), Error>
+async fn handle_incoming<S>(tx: mpsc::Sender<Msg>, mut reader: S) -> Result<(), Error>
 where
     S: Stream<Item = Result<Message, WsError>> + Unpin,
 {
