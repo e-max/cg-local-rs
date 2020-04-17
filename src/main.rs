@@ -1,5 +1,6 @@
 use env_logger;
-use futures::{join, Sink, SinkExt, Stream, StreamExt};
+use futures::TryFutureExt;
+use futures::{try_join, Sink, SinkExt, Stream, StreamExt};
 use log::{debug, error, info};
 use serde;
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,8 @@ enum Msg {
     AppReady {},
     #[serde(rename = "send-code")]
     SendCode {},
+    #[serde(rename = "code")]
+    Code { code: String },
 }
 
 #[tokio::main]
@@ -38,7 +41,7 @@ async fn main() -> Result<(), Error> {
     info!("Listening on: {}", addr);
 
     while let Ok((stream, _)) = listener.accept().await {
-        tokio::spawn(accept_connection(stream));
+        tokio::spawn(accept_connection(stream).map_err(|e| error!("Failed with error: {:?}", e)));
     }
     Ok(())
 }
@@ -56,12 +59,7 @@ async fn accept_connection(stream: TcpStream) -> Result<(), Error> {
     tx.send(Msg::SendDetails {}).await?;
     info!("Start listening");
 
-    join!(
-        tokio::spawn(handle_incoming(tx, reader)),
-        tokio::spawn(handle_outgoing(rx, writer))
-    );
-
-    Ok(())
+    try_join!(handle_incoming(tx, reader), handle_outgoing(rx, writer)).map(|_| ())
 }
 
 async fn handle_outgoing<S>(mut rx: mpsc::Receiver<Msg>, mut writer: S) -> Result<(), Error>
@@ -80,7 +78,7 @@ where
     Ok(())
 }
 
-async fn handle_incoming<S>(tx: mpsc::Sender<Msg>, mut reader: S) -> Result<(), Error>
+async fn handle_incoming<S>(mut tx: mpsc::Sender<Msg>, mut reader: S) -> Result<(), Error>
 where
     S: Stream<Item = Result<Message, WsError>> + Unpin,
 {
@@ -88,22 +86,22 @@ where
         let msg = msg?;
         debug!("receive raw msg = {:?}", msg);
         match msg {
-            Message::Text(txt) => handle_message(&txt)?,
-            _ => (),
+            Message::Text(txt) => handle_message(&mut tx, &txt).await?,
+            _ => error!("Unknown WebSocket message type {:?}", msg),
         }
     }
     Ok(())
 }
 
-fn handle_message(s: &str) -> Result<(), Error> {
+async fn handle_message(tx: &mut mpsc::Sender<Msg>, s: &str) -> Result<(), Error> {
     let m: Msg = serde_json::from_str(s)?;
     match m {
         Msg::Details { .. } => {
             info!(" got Details message = {:?}", m);
+            tx.send(Msg::AppReady {}).await.map_err(|e| e.into())
         }
-        _ => error!("Got unknown message {:?}", m),
+        _ => Err(Error::UnknownMessage(m)),
     }
-    Ok(())
 }
 
 #[derive(Debug)]
@@ -113,6 +111,7 @@ enum Error {
     IO(io::Error),
     General(String),
     SendError(mpsc::error::SendError<Msg>),
+    UnknownMessage(Msg),
 }
 
 impl From<WsError> for Error {
