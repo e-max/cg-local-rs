@@ -56,26 +56,18 @@ struct Monitor {
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     env_logger::init();
-    info!("Hello, world!");
     let args = env::args().collect::<Vec<String>>();
     if args.len() < 2 {
         panic!("Must pass a path to a file to monitor");
     }
 
     let path = args[1].clone();
-    println!("\x1B[31;1m file\x1B[0m = {:?}", path);
-    let (tx, mut rx) = broadcast::channel::<()>(16);
+    let (tx, rx) = broadcast::channel::<()>(16);
 
-    tokio::task::spawn_blocking({
+    let handle = tokio::task::spawn_blocking({
         let path = path.clone();
         let tx = tx.clone();
-        move || monitor_file(path, tx)
-    });
-
-    tokio::spawn(async move {
-        while let Ok(res) = rx.recv().await {
-            println!("\x1B[33;1m FILE UPDATED \x1B[0m");
-        }
+        move || monitor_file(path, tx).map_err(|e| panic!("File removed"))
     });
 
     let monitor = Arc::new(RwLock::new(Monitor {
@@ -101,9 +93,10 @@ fn monitor_file<P: AsRef<Path> + Clone>(
     path: P,
     bcast: broadcast::Sender<()>,
 ) -> Result<(), Error> {
+    debug!("Start file monitoring");
     'main: loop {
         if !path.as_ref().exists() {
-            panic!("File {} doesn't exists");
+            panic!("File {} doesn't exists", path.as_ref().display());
         }
         let (mut tx, mut rx) = blocking_mpsc::channel();
         let mut watcher = watcher(tx, Duration::from_secs(1)).unwrap();
@@ -111,11 +104,11 @@ fn monitor_file<P: AsRef<Path> + Clone>(
             .watch(path.clone(), RecursiveMode::Recursive)
             .unwrap();
 
-        info!("run loop");
         loop {
             let ev = rx
                 .recv()
                 .map_err(|e| Error::FileMonitorError(format!("notify error {}", e)))?;
+            debug!("inotify event {:?}", ev);
             match ev {
                 DebouncedEvent::NoticeRemove(_) => {
                     // Well file either removed or just an editor use Write and Move strategy
@@ -123,17 +116,22 @@ fn monitor_file<P: AsRef<Path> + Clone>(
                     if !path.as_ref().exists() {
                         return Err(Error::FileMonitorError("File removed".to_owned()));
                     }
+
+                    info!("File updated");
                     tokio::spawn({
                         let bcast = bcast.clone();
                         || async move { bcast.send(()) }
                     }());
 
-                    info!("File updated");
                     //everything seems fine. Let start from the beginning
                     continue 'main;
                 }
                 DebouncedEvent::NoticeWrite(_) | DebouncedEvent::Write(_) => {
                     info!("File updated");
+                    tokio::spawn({
+                        let bcast = bcast.clone();
+                        || async move { bcast.send(()) }
+                    }());
                 }
                 DebouncedEvent::Chmod(_) => {
                     info!("Chmod on file");
@@ -143,13 +141,6 @@ fn monitor_file<P: AsRef<Path> + Clone>(
         }
     }
 }
-
-//async fn file_monitor<S: StreamExt + Unpin>(stream: S) -> Result<(), Error> {
-//while let Some(ev) = stream.next().await {
-//println!("\x1B[31;1m ev\x1B[0m = {:?}", ev);
-//}
-//Ok(())
-//}
 
 async fn accept_connection(stream: TcpStream, monitor: Arc<RwLock<Monitor>>) -> Result<(), Error> {
     let addr = stream.peer_addr()?;
@@ -168,7 +159,7 @@ async fn accept_connection(stream: TcpStream, monitor: Arc<RwLock<Monitor>>) -> 
         let monitor = monitor.clone();
         || async move {
             let mut bcast = monitor.read().await.bcast.subscribe();
-            while let Ok(res) = bcast.recv().await {
+            while let Ok(_) = bcast.recv().await {
                 debug!("File updated. Try to upload");
                 let mon = monitor.read().await;
                 if mon.associated_question.is_none() {
@@ -209,7 +200,7 @@ where
     S: Sink<Message> + Unpin,
 {
     while let Some(msg) = rx.recv().await {
-        info!("Try to send {:?}", msg);
+        debug!("Try to send {:?}", msg);
         let resp = serde_json::to_string(&msg)?;
         writer
             .send(Message::text(resp))
@@ -245,7 +236,7 @@ async fn handle_message(
     monitor: Arc<RwLock<Monitor>>,
 ) -> Result<(), Error> {
     let m: Msg = serde_json::from_str(s)?;
-    info!(" got message = {:?}", m);
+    debug!(" got message = {:?}", m);
     match m {
         Msg::Details {
             ref title,
