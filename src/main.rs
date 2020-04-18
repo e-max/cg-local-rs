@@ -46,39 +46,43 @@ async fn main() -> Result<(), Error> {
         panic!("Must pass a path to a file to monitor");
     }
 
-    let path = Path::new(&args[1]);
+    let path = args[1].clone();
     println!("\x1B[31;1m file\x1B[0m = {:?}", path);
-    //let (tx, _) = broadcast::channel(16);
-    monitor_file(path);
+    let (tx, mut rx) = broadcast::channel::<()>(16);
+    //monitor_file(path, tx.clone());
 
-    //tokio::task::spawn_blocking(move || loop {
-    //match rx.recv() {
-    //Ok(event) => println!("{:?}", event),
-    //Err(e) => println!("watch error: {:?}", e),
-    //}
-    //});
-
-    //tokio::spawn(file_monitor(inot));
+    tokio::task::spawn_blocking({
+        let path = path.clone();
+        let tx = tx.clone();
+        move || monitor_file(path, tx)
+    });
 
     let addr = "localhost:53135";
     let mut listener = TcpListener::bind(addr).await?;
     info!("Listening on: {}", addr);
 
     while let Ok((stream, _)) = listener.accept().await {
-        tokio::spawn(accept_connection(stream).map_err(|e| error!("Failed with error: {:?}", e)));
+        tokio::spawn(
+            accept_connection(stream, tx.subscribe())
+                .map_err(|e| error!("Failed with error: {:?}", e)),
+        );
     }
     Ok(())
 }
 
-fn monitor_file<P: AsRef<Path> + Copy>(path: P) -> Result<(), Error> {
+fn monitor_file<P: AsRef<Path> + Clone>(
+    path: P,
+    bcast: broadcast::Sender<()>,
+) -> Result<(), Error> {
     'main: loop {
         if !path.as_ref().exists() {
             panic!("File {} doesn't exists");
         }
         let (mut tx, mut rx) = blocking_mpsc::channel();
         let mut watcher = watcher(tx, Duration::from_secs(1)).unwrap();
-        watcher.watch(path, RecursiveMode::Recursive).unwrap();
-        println!("CCC");
+        watcher
+            .watch(path.clone(), RecursiveMode::Recursive)
+            .unwrap();
 
         info!("run loop");
         loop {
@@ -92,7 +96,12 @@ fn monitor_file<P: AsRef<Path> + Copy>(path: P) -> Result<(), Error> {
                     if !path.as_ref().exists() {
                         return Err(Error::FileMonitorError("File removed".to_owned()));
                     }
-                    println!("\x1B[31;1m FILE UPDATED\x1B[0m");
+                    tokio::spawn({
+                        let bcast = bcast.clone();
+                        || async move { bcast.send(()) }
+                    }());
+
+                    info!("File updated");
                     //everything seems fine. Let start from the beginning
                     continue 'main;
                 }
@@ -115,7 +124,10 @@ fn monitor_file<P: AsRef<Path> + Copy>(path: P) -> Result<(), Error> {
 //Ok(())
 //}
 
-async fn accept_connection(stream: TcpStream) -> Result<(), Error> {
+async fn accept_connection(
+    stream: TcpStream,
+    mut bcast: broadcast::Receiver<()>,
+) -> Result<(), Error> {
     let addr = stream.peer_addr()?;
     info!("addr {}", addr);
     let ws_stream = accept_async(stream).await?;
@@ -127,6 +139,14 @@ async fn accept_connection(stream: TcpStream) -> Result<(), Error> {
 
     tx.send(Msg::SendDetails {}).await?;
     info!("Start listening");
+    tokio::spawn({
+        let tx = tx.clone();
+        || async move {
+            while let Ok(res) = bcast.recv().await {
+                println!("\x1B[33;1m confirt file changes\x1B[0m");
+            }
+        }
+    }());
 
     try_join!(handle_incoming(tx, reader), handle_outgoing(rx, writer)).map(|_| ())
 }
