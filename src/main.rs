@@ -1,6 +1,6 @@
 use env_logger;
 use futures::TryFutureExt;
-use futures::{try_join, Sink, SinkExt, Stream, StreamExt};
+use futures::{pin_mut, select, try_join, FutureExt, Sink, SinkExt, Stream, StreamExt};
 use log::{debug, error, info, warn};
 use notify::{watcher, DebouncedEvent, RecursiveMode, Watcher};
 use serde;
@@ -14,7 +14,7 @@ use std::sync::mpsc as blocking_mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
 use tokio_tungstenite::accept_async;
 use tungstenite::protocol::Message;
 use tungstenite::Error as WsError;
@@ -64,10 +64,12 @@ async fn main() -> Result<(), Error> {
     let path = args[1].clone();
     let (tx, rx) = broadcast::channel::<()>(16);
 
+    let (mut quit_tx, mut quit_rx) = oneshot::channel::<()>();
+
     let handle = tokio::task::spawn_blocking({
         let path = path.clone();
         let tx = tx.clone();
-        move || monitor_file(path, tx).map_err(|e| panic!("File removed"))
+        move || monitor_file(path, tx).map_err(|e| error!("{:?}", e))
     });
 
     let monitor = Arc::new(RwLock::new(Monitor {
@@ -80,12 +82,22 @@ async fn main() -> Result<(), Error> {
     let mut listener = TcpListener::bind(addr).await?;
     info!("Listening on: {}", addr);
 
-    while let Ok((stream, _)) = listener.accept().await {
-        tokio::spawn(
-            accept_connection(stream, monitor.clone())
-                .map_err(|e| error!("Failed with error: {:?}", e)),
-        );
+    let listener = async {
+        while let Ok((stream, _)) = listener.accept().await {
+            tokio::spawn(
+                accept_connection(stream, monitor.clone())
+                    .map_err(|e| error!("Failed with error: {:?}", e)),
+            );
+        }
     }
+    .fuse();
+
+    let file_monitor = handle.fuse();
+    pin_mut!(listener, file_monitor);
+    select! {
+    _ = listener => (),
+    _ = file_monitor => ()};
+
     Ok(())
 }
 
@@ -96,7 +108,10 @@ fn monitor_file<P: AsRef<Path> + Clone>(
     debug!("Start file monitoring");
     'main: loop {
         if !path.as_ref().exists() {
-            panic!("File {} doesn't exists", path.as_ref().display());
+            return Err(Error::FileMonitorError(format!(
+                "File {} doesn't exists",
+                path.as_ref().display()
+            )));
         }
         let (mut tx, mut rx) = blocking_mpsc::channel();
         let mut watcher = watcher(tx, Duration::from_secs(1)).unwrap();
