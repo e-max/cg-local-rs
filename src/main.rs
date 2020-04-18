@@ -1,7 +1,7 @@
 use env_logger;
 use futures::TryFutureExt;
 use futures::{try_join, Sink, SinkExt, Stream, StreamExt};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use notify::{watcher, DebouncedEvent, RecursiveMode, Watcher};
 use serde;
 use serde::{Deserialize, Serialize};
@@ -46,7 +46,7 @@ struct Question {
 
 #[derive(Clone)]
 struct Monitor {
-    file: String,
+    path: String,
     associated_question: Option<Question>,
     bcast: broadcast::Sender<()>,
 }
@@ -71,7 +71,7 @@ async fn main() -> Result<(), Error> {
     });
 
     let monitor = Arc::new(RwLock::new(Monitor {
-        file: path.clone(),
+        path: path.clone(),
         associated_question: None,
         bcast: tx,
     }));
@@ -218,19 +218,28 @@ async fn handle_message(
         Msg::Details {
             ref title,
             question_id,
-        } => handle_details(title, question_id, monitor).await,
-        Msg::Code { ref code } => {
-            println!("\x1B[32;1m GOT CODE\x1B[0m");
-            Ok(())
-        }
+        } => handle_details(title, question_id, monitor, tx).await,
+        Msg::Code { ref code } => handle_code(code, monitor).await,
         _ => Err(Error::UnknownMessage(m)),
     }
+}
+
+async fn handle_code(code: &str, monitor: Arc<RwLock<Monitor>>) -> Result<(), Error> {
+    let path = &monitor.read().await.path;
+    let mdata = fs::metadata(path)?;
+    if mdata.len() == 0 {
+        fs::write(path, code.as_bytes())?;
+    } else {
+        warn!("File is not empty. We won't overwrite it with a version from server");
+    }
+    Ok(())
 }
 
 async fn handle_details(
     title: &str,
     question_id: u32,
     monitor: Arc<RwLock<Monitor>>,
+    tx: &mut mpsc::Sender<Msg>,
 ) -> Result<(), Error> {
     let mut monitor = monitor.write().await;
     let new_question = Question {
