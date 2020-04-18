@@ -1,18 +1,19 @@
-use env_logger;
 use futures::TryFutureExt;
 use futures::{pin_mut, select, try_join, FutureExt, Sink, SinkExt, Stream, StreamExt};
-use log::{debug, error, info, warn};
+use log::{self, debug, error, info, warn};
 use notify::{watcher, DebouncedEvent, RecursiveMode, Watcher};
 use serde;
 use serde::{Deserialize, Serialize};
 use serde_json;
+use simplelog::{Config, TermLogger, TerminalMode};
 use std::env;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc as blocking_mpsc;
 use std::sync::Arc;
 use std::time::Duration;
+use structopt::StructOpt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
 use tokio_tungstenite::accept_async;
@@ -48,20 +49,39 @@ struct Question {
 
 #[derive(Clone)]
 struct Monitor {
-    path: String,
+    path: PathBuf,
     associated_question: Option<Question>,
     bcast: broadcast::Sender<()>,
 }
 
+/// A basic example
+#[derive(StructOpt, Debug)]
+#[structopt(name = "basic")]
+struct Opt {
+    ///Overwrite current file from server
+    #[structopt(long)]
+    force_download: bool,
+
+    ///Debug info
+    #[structopt(long)]
+    debug: bool,
+
+    /// File to process
+    #[structopt(name = "FILE", parse(from_os_str))]
+    file: PathBuf,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    env_logger::init();
-    let args = env::args().collect::<Vec<String>>();
-    if args.len() < 2 {
-        panic!("Must pass a path to a file to monitor");
-    }
+    let opt = Opt::from_args();
+    let loglevel = if opt.debug {
+        log::LevelFilter::Debug
+    } else {
+        log::LevelFilter::Info
+    };
+    let _ = TermLogger::init(loglevel, Config::default(), TerminalMode::Mixed);
 
-    let path = args[1].clone();
+    let path = opt.file;
     let (tx, rx) = broadcast::channel::<()>(16);
 
     let (mut quit_tx, mut quit_rx) = oneshot::channel::<()>();
@@ -105,7 +125,7 @@ fn monitor_file<P: AsRef<Path> + Clone>(
     path: P,
     bcast: broadcast::Sender<()>,
 ) -> Result<(), Error> {
-    debug!("Start file monitoring");
+    info!("Start monitoring file {}", path.as_ref().display());
     'main: loop {
         if !path.as_ref().exists() {
             return Err(Error::FileMonitorError(format!(
@@ -159,16 +179,16 @@ fn monitor_file<P: AsRef<Path> + Clone>(
 
 async fn accept_connection(stream: TcpStream, monitor: Arc<RwLock<Monitor>>) -> Result<(), Error> {
     let addr = stream.peer_addr()?;
-    info!("addr {}", addr);
+    debug!("addr {}", addr);
     let ws_stream = accept_async(stream).await?;
 
     let (writer, reader) = ws_stream.split();
     let (mut tx, rx) = mpsc::channel::<Msg>(10);
 
-    info!("Send initial message");
+    info!("Got connection from browser");
 
+    debug!(" Send initial command");
     tx.send(Msg::SendDetails {}).await?;
-    info!("Start listening");
     tokio::spawn({
         let mut tx = tx.clone();
         let monitor = monitor.clone();
