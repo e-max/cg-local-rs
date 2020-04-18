@@ -11,9 +11,10 @@ use std::fs;
 use std::io;
 use std::path::Path;
 use std::sync::mpsc as blocking_mpsc;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio_tungstenite::accept_async;
 use tungstenite::protocol::Message;
 use tungstenite::Error as WsError;
@@ -37,6 +38,19 @@ enum Msg {
     Code { code: String },
 }
 
+#[derive(PartialEq, Clone, Debug)]
+struct Question {
+    question_id: u32,
+    title: String,
+}
+
+#[derive(Clone)]
+struct Monitor {
+    file: String,
+    associated_question: Option<Question>,
+    bcast: broadcast::Sender<()>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     env_logger::init();
@@ -48,8 +62,7 @@ async fn main() -> Result<(), Error> {
 
     let path = args[1].clone();
     println!("\x1B[31;1m file\x1B[0m = {:?}", path);
-    let (tx, mut rx) = broadcast::channel::<()>(16);
-    //monitor_file(path, tx.clone());
+    let (tx, rx) = broadcast::channel::<()>(16);
 
     tokio::task::spawn_blocking({
         let path = path.clone();
@@ -57,13 +70,19 @@ async fn main() -> Result<(), Error> {
         move || monitor_file(path, tx)
     });
 
+    let monitor = Arc::new(RwLock::new(Monitor {
+        file: path.clone(),
+        associated_question: None,
+        bcast: tx,
+    }));
+
     let addr = "localhost:53135";
     let mut listener = TcpListener::bind(addr).await?;
     info!("Listening on: {}", addr);
 
     while let Ok((stream, _)) = listener.accept().await {
         tokio::spawn(
-            accept_connection(stream, tx.subscribe())
+            accept_connection(stream, monitor.clone())
                 .map_err(|e| error!("Failed with error: {:?}", e)),
         );
     }
@@ -106,7 +125,7 @@ fn monitor_file<P: AsRef<Path> + Clone>(
                     continue 'main;
                 }
                 DebouncedEvent::NoticeWrite(_) | DebouncedEvent::Write(_) => {
-                    println!("\x1B[31;1m FILE UPDATED\x1B[0m");
+                    info!("File updated");
                 }
                 DebouncedEvent::Chmod(_) => {
                     info!("Chmod on file");
@@ -124,10 +143,8 @@ fn monitor_file<P: AsRef<Path> + Clone>(
 //Ok(())
 //}
 
-async fn accept_connection(
-    stream: TcpStream,
-    mut bcast: broadcast::Receiver<()>,
-) -> Result<(), Error> {
+async fn accept_connection(stream: TcpStream, monitor: Arc<RwLock<Monitor>>) -> Result<(), Error> {
+    let mut bcast = monitor.read().await.bcast.subscribe();
     let addr = stream.peer_addr()?;
     info!("addr {}", addr);
     let ws_stream = accept_async(stream).await?;
@@ -148,7 +165,11 @@ async fn accept_connection(
         }
     }());
 
-    try_join!(handle_incoming(tx, reader), handle_outgoing(rx, writer)).map(|_| ())
+    try_join!(
+        handle_incoming(tx, reader, monitor),
+        handle_outgoing(rx, writer)
+    )
+    .map(|_| ())
 }
 
 async fn handle_outgoing<S>(mut rx: mpsc::Receiver<Msg>, mut writer: S) -> Result<(), Error>
@@ -167,7 +188,11 @@ where
     Ok(())
 }
 
-async fn handle_incoming<S>(mut tx: mpsc::Sender<Msg>, mut reader: S) -> Result<(), Error>
+async fn handle_incoming<S>(
+    mut tx: mpsc::Sender<Msg>,
+    mut reader: S,
+    monitor: Arc<RwLock<Monitor>>,
+) -> Result<(), Error>
 where
     S: Stream<Item = Result<Message, WsError>> + Unpin,
 {
@@ -175,18 +200,35 @@ where
         let msg = msg?;
         debug!("receive raw msg = {:?}", msg);
         match msg {
-            Message::Text(txt) => handle_message(&mut tx, &txt).await?,
+            Message::Text(txt) => handle_message(&mut tx, &txt, monitor.clone()).await?,
             _ => error!("Unknown WebSocket message type {:?}", msg),
         }
     }
     Ok(())
 }
 
-async fn handle_message(tx: &mut mpsc::Sender<Msg>, s: &str) -> Result<(), Error> {
+async fn handle_message(
+    tx: &mut mpsc::Sender<Msg>,
+    s: &str,
+    monitor: Arc<RwLock<Monitor>>,
+) -> Result<(), Error> {
     let m: Msg = serde_json::from_str(s)?;
+    info!(" got message = {:?}", m);
     match m {
-        Msg::Details { .. } => {
-            info!(" got Details message = {:?}", m);
+        Msg::Details { title, question_id } => {
+            let mut monitor = monitor.write().await;
+            let new_question = Question { question_id, title };
+
+            if let Some(ref q) = monitor.associated_question {
+                if q != &new_question {
+                    return Err(Error::QuestionConflict {
+                        current_question: q.title.clone(),
+                        new_question: new_question.title.clone(),
+                    });
+                }
+            }
+
+            monitor.associated_question = Some(new_question);
             tx.send(Msg::AppReady {}).await.map_err(|e| e.into())
         }
         _ => Err(Error::UnknownMessage(m)),
@@ -202,6 +244,10 @@ enum Error {
     SendError(mpsc::error::SendError<Msg>),
     UnknownMessage(Msg),
     FileMonitorError(String),
+    QuestionConflict {
+        current_question: String,
+        new_question: String,
+    },
 }
 
 impl From<WsError> for Error {
