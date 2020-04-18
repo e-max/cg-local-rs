@@ -215,24 +215,40 @@ async fn handle_message(
     let m: Msg = serde_json::from_str(s)?;
     info!(" got message = {:?}", m);
     match m {
-        Msg::Details { title, question_id } => {
-            let mut monitor = monitor.write().await;
-            let new_question = Question { question_id, title };
-
-            if let Some(ref q) = monitor.associated_question {
-                if q != &new_question {
-                    return Err(Error::QuestionConflict {
-                        current_question: q.title.clone(),
-                        new_question: new_question.title.clone(),
-                    });
-                }
-            }
-
-            monitor.associated_question = Some(new_question);
-            tx.send(Msg::AppReady {}).await.map_err(|e| e.into())
+        Msg::Details {
+            ref title,
+            question_id,
+        } => handle_details(title, question_id, monitor).await,
+        Msg::Code { ref code } => {
+            println!("\x1B[32;1m GOT CODE\x1B[0m");
+            Ok(())
         }
         _ => Err(Error::UnknownMessage(m)),
     }
+}
+
+async fn handle_details(
+    title: &str,
+    question_id: u32,
+    monitor: Arc<RwLock<Monitor>>,
+) -> Result<(), Error> {
+    let mut monitor = monitor.write().await;
+    let new_question = Question {
+        question_id,
+        title: title.to_owned(),
+    };
+
+    if let Some(ref q) = monitor.associated_question {
+        if q != &new_question {
+            return Err(Error::QuestionConflict {
+                current_question: q.title.clone(),
+                new_question: new_question.title.clone(),
+            });
+        }
+    }
+
+    monitor.associated_question = Some(new_question);
+    tx.send(Msg::AppReady {}).await.map_err(|e| e.into())
 }
 
 #[derive(Debug)]
