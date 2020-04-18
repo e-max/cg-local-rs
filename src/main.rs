@@ -52,6 +52,7 @@ struct Monitor {
     path: PathBuf,
     associated_question: Option<Question>,
     bcast: broadcast::Sender<()>,
+    force_download: bool,
 }
 
 /// A basic example
@@ -96,6 +97,7 @@ async fn main() -> Result<(), Error> {
         path: path.clone(),
         associated_question: None,
         bcast: tx,
+        force_download: opt.force_download,
     }));
 
     let addr = "localhost:53135";
@@ -283,10 +285,11 @@ async fn handle_message(
 }
 
 async fn handle_code(code: &str, monitor: Arc<RwLock<Monitor>>) -> Result<(), Error> {
-    let path = &monitor.read().await.path;
-    let mdata = fs::metadata(path)?;
-    if mdata.len() == 0 {
-        fs::write(path, code.as_bytes())?;
+    let monitor = monitor.read().await;
+    let mdata = fs::metadata(&monitor.path)?;
+    if mdata.len() == 0 || monitor.force_download {
+        info!("Download file from server");
+        fs::write(&monitor.path, code.as_bytes())?;
     } else {
         warn!("File is not empty. We won't overwrite it with a version from server");
     }
