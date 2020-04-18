@@ -36,6 +36,8 @@ enum Msg {
     SendCode {},
     #[serde(rename = "code")]
     Code { code: String },
+    #[serde(rename = "update-code")]
+    UpdateCode { code: String, play: bool },
 }
 
 #[derive(PartialEq, Clone, Debug)]
@@ -62,12 +64,18 @@ async fn main() -> Result<(), Error> {
 
     let path = args[1].clone();
     println!("\x1B[31;1m file\x1B[0m = {:?}", path);
-    let (tx, rx) = broadcast::channel::<()>(16);
+    let (tx, mut rx) = broadcast::channel::<()>(16);
 
     tokio::task::spawn_blocking({
         let path = path.clone();
         let tx = tx.clone();
         move || monitor_file(path, tx)
+    });
+
+    tokio::spawn(async move {
+        while let Ok(res) = rx.recv().await {
+            println!("\x1B[33;1m FILE UPDATED \x1B[0m");
+        }
     });
 
     let monitor = Arc::new(RwLock::new(Monitor {
@@ -144,7 +152,6 @@ fn monitor_file<P: AsRef<Path> + Clone>(
 //}
 
 async fn accept_connection(stream: TcpStream, monitor: Arc<RwLock<Monitor>>) -> Result<(), Error> {
-    let mut bcast = monitor.read().await.bcast.subscribe();
     let addr = stream.peer_addr()?;
     info!("addr {}", addr);
     let ws_stream = accept_async(stream).await?;
@@ -157,10 +164,35 @@ async fn accept_connection(stream: TcpStream, monitor: Arc<RwLock<Monitor>>) -> 
     tx.send(Msg::SendDetails {}).await?;
     info!("Start listening");
     tokio::spawn({
-        let tx = tx.clone();
+        let mut tx = tx.clone();
+        let monitor = monitor.clone();
         || async move {
+            let mut bcast = monitor.read().await.bcast.subscribe();
             while let Ok(res) = bcast.recv().await {
-                println!("\x1B[33;1m confirt file changes\x1B[0m");
+                debug!("File updated. Try to upload");
+                let mon = monitor.read().await;
+                if mon.associated_question.is_none() {
+                    warn!("no associated question yet");
+                    continue;
+                }
+                let path = &mon.path;
+                let res = fs::metadata(path);
+                if res.is_err() {
+                    warn!("got error {:?}", res);
+                    continue;
+                }
+                if res.unwrap().len() == 0 {
+                    warn!("file size is 0. ignore");
+                }
+                if let Ok(msg) = fs::read(path)
+                    .map_err(|e: io::Error| format!("Cannot read file {}", e))
+                    .and_then(|body| {
+                        String::from_utf8(body).map_err(|e| "cannot read file as string".to_owned())
+                    })
+                    .map(|code| Msg::UpdateCode { code, play: false })
+                {
+                    tx.send(msg).await;
+                }
             }
         }
     }());
