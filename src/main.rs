@@ -51,16 +51,16 @@ struct Monitor {
     path: PathBuf,
     associated_question: Option<Question>,
     bcast: broadcast::Sender<()>,
-    force_download: bool,
+    force_first_download: bool,
 }
 
 /// A basic example
 #[derive(StructOpt, Debug)]
 #[structopt(name = "basic")]
 struct Opt {
-    ///Overwrite current file from server
+    ///Download file from the service in the beginning
     #[structopt(long)]
-    force_download: bool,
+    force_first_download: bool,
 
     ///Debug info
     #[structopt(long)]
@@ -96,7 +96,7 @@ async fn main() -> Result<(), Error> {
         path: path.clone(),
         associated_question: None,
         bcast: tx,
-        force_download: opt.force_download,
+        force_first_download: opt.force_first_download,
     }));
 
     let addr = "localhost:53135";
@@ -285,11 +285,12 @@ async fn handle_message(
 }
 
 async fn handle_code(code: &str, monitor: Arc<RwLock<Monitor>>) -> Result<(), Error> {
-    let monitor = monitor.read().await;
+    let mut monitor = monitor.write().await;
     let mdata = fs::metadata(&monitor.path)?;
-    if mdata.len() == 0 || monitor.force_download {
+    if mdata.len() == 0 || monitor.force_first_download {
         info!("Download file from server");
         fs::write(&monitor.path, code.as_bytes())?;
+        monitor.force_first_download = false;
     } else {
         warn!("File is not empty. We won't overwrite it with a version from server");
     }
