@@ -1,5 +1,5 @@
 [package]
-name = "websocket"
+name = "cg-local-rs"
 version = "0.1.0"
 authors = ["Max Lavrenov <max.lavrenov@optiopay.com>"]
 edition = "2018"

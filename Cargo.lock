@@ -113,6 +113,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4785bdd1c96b2a846b2bd7cc02e86b6b3dbf14e7e53446c4f54c92a361040822"
 
 [[package]]
+name = "cg-local-rs"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "log",
+ "notify",
+ "serde",
+ "serde_json",
+ "simplelog",
+ "structopt",
+ "tokio",
+ "tokio-tungstenite",
+ "tungstenite",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1235,22 +1251,6 @@ name = "wasi"
 version = "0.9.0+wasi-snapshot-preview1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cccddf32554fecc6acb585f82a32a72e28b48f8c4c1883ddfeeeaa96f7d8e519"
-
-[[package]]
-name = "websocket"
-version = "0.1.0"
-dependencies = [
- "futures",
- "log",
- "notify",
- "serde",
- "serde_json",
- "simplelog",
- "structopt",
- "tokio",
- "tokio-tungstenite",
- "tungstenite",
-]
 
 [[package]]
 name = "winapi"
