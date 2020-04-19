@@ -6,7 +6,6 @@ use serde;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use simplelog::{Config, TermLogger, TerminalMode};
-use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -15,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use structopt::StructOpt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio_tungstenite::accept_async;
 use tungstenite::protocol::Message;
 use tungstenite::Error as WsError;
@@ -83,9 +82,9 @@ async fn main() -> Result<(), Error> {
     let _ = TermLogger::init(loglevel, Config::default(), TerminalMode::Mixed);
 
     let path = opt.file;
-    let (tx, rx) = broadcast::channel::<()>(16);
+    let (tx, _) = broadcast::channel::<()>(16);
 
-    let (mut quit_tx, mut quit_rx) = oneshot::channel::<()>();
+    //let (mut quit_tx, mut quit_rx) = oneshot::channel::<()>();
 
     let handle = tokio::task::spawn_blocking({
         let path = path.clone();
@@ -130,12 +129,12 @@ fn monitor_file<P: AsRef<Path> + Clone>(
     info!("Start monitoring file {}", path.as_ref().display());
     'main: loop {
         if !path.as_ref().exists() {
-            return Err(Error::FileMonitorError(format!(
+            return Err(Error::FileMonitor(format!(
                 "File {} doesn't exists",
                 path.as_ref().display()
             )));
         }
-        let (mut tx, mut rx) = blocking_mpsc::channel();
+        let (tx, rx) = blocking_mpsc::channel();
         let mut watcher = watcher(tx, Duration::from_secs(1)).unwrap();
         watcher
             .watch(path.clone(), RecursiveMode::Recursive)
@@ -144,14 +143,14 @@ fn monitor_file<P: AsRef<Path> + Clone>(
         loop {
             let ev = rx
                 .recv()
-                .map_err(|e| Error::FileMonitorError(format!("notify error {}", e)))?;
+                .map_err(|e| Error::FileMonitor(format!("notify error {}", e)))?;
             debug!("inotify event {:?}", ev);
             match ev {
                 DebouncedEvent::NoticeRemove(_) => {
                     // Well file either removed or just an editor use Write and Move strategy
                     // (like vim does). Check it
                     if !path.as_ref().exists() {
-                        return Err(Error::FileMonitorError("File removed".to_owned()));
+                        return Err(Error::FileMonitor("File removed".to_owned()));
                     }
 
                     info!("File updated");
@@ -173,7 +172,7 @@ fn monitor_file<P: AsRef<Path> + Clone>(
                 DebouncedEvent::Chmod(_) => {
                     info!("Chmod on file");
                 }
-                _ => return Err(Error::FileMonitorError(format!("{:?}", ev))),
+                _ => return Err(Error::FileMonitor(format!("{:?}", ev))),
             };
         }
     }
@@ -215,13 +214,14 @@ async fn accept_connection(stream: TcpStream, monitor: Arc<RwLock<Monitor>>) -> 
                 if let Ok(msg) = fs::read(path)
                     .map_err(|e: io::Error| format!("Cannot read file {}", e))
                     .and_then(|body| {
-                        String::from_utf8(body).map_err(|e| "cannot read file as string".to_owned())
+                        String::from_utf8(body).map_err(|_| "cannot read file as string".to_owned())
                     })
                     .map(|code| Msg::UpdateCode { code, play: false })
                 {
-                    tx.send(msg).await;
+                    tx.send(msg).await?;
                 }
             }
+            Ok::<(), Error>(())
         }
     }());
 
@@ -323,13 +323,13 @@ async fn handle_details(
 
 #[derive(Debug)]
 enum Error {
-    WsError(WsError),
-    JsonError(serde_json::Error),
+    WebSocket(WsError),
+    Json(serde_json::Error),
     IO(io::Error),
     General(String),
-    SendError(mpsc::error::SendError<Msg>),
+    Send(mpsc::error::SendError<Msg>),
     UnknownMessage(Msg),
-    FileMonitorError(String),
+    FileMonitor(String),
     QuestionConflict {
         current_question: String,
         new_question: String,
@@ -338,7 +338,7 @@ enum Error {
 
 impl From<WsError> for Error {
     fn from(e: WsError) -> Error {
-        Error::WsError(e)
+        Error::WebSocket(e)
     }
 }
 
@@ -350,12 +350,12 @@ impl From<io::Error> for Error {
 
 impl From<serde_json::Error> for Error {
     fn from(e: serde_json::Error) -> Self {
-        Error::JsonError(e)
+        Error::Json(e)
     }
 }
 
 impl From<mpsc::error::SendError<Msg>> for Error {
     fn from(e: mpsc::error::SendError<Msg>) -> Self {
-        Error::SendError(e)
+        Error::Send(e)
     }
 }
