@@ -5,6 +5,8 @@ authors = ["Max Lavrenov <max.lavrenov@optiopay.com>"]
 edition = "2018"
 description = "Backend for CodinGame browser extensions."
 license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/e-max/cg-local-rs"
 
 
 [dependencies]
