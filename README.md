@@ -43,5 +43,4 @@ There are two exceptions:
 * when you start the tool with a flag **--force-first-download**
 
 
-
-
+I use it mostly with Firefox extension and it works pretty well. If you experience any issue, I'll appreciate if you create an issue.
