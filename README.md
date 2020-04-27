@@ -34,6 +34,9 @@ Then you need to choose a local file you want to synchronize with CodiGame and p
 ```
 $ cg-local-rs ./src/main.rs
 ```
+And finally you need to connect to this app from your CodinGame IDE. You can do it on a page with a pazzle
+
+
 That's all!  All changes you make in your file will be immediately uploaded to CodinGame IDE.
 
 We consider your local file state superior to CodinGame IDE state and sync only in one direction - from your local file to CodinGame IDE.
