@@ -1,3 +1,53 @@
+//!  # cg-local-rs
+//!
+//! A background process for syncing [Codingame IDE](https://www.codingame.com/) with a local file.
+//! It allows using your preferred IDE for solving puzzles.
+//!
+//! This app is compatible with browser extentions
+//! * [Firefox](https://addons.mozilla.org/en-US/firefox/addon/cg-local/)
+//! * [Chrome](https://chrome.google.com/webstore/detail/cg-local/ihakjfajoihlncbnggmcmmeabclpfdgo)
+//!
+//! **cg-local-rs** is a replacement for a  [CG Local App](https://github.com/jmerle/cg-local-app) which is required an old version of Java
+//! and the old version of openjfx and might be hard to install.
+//!
+//! Original thread about CG Local is here https://www.codingame.com/forum/t/cg-local/10359
+//!
+//! ## Installation
+//!
+//! ### Using cargo
+//! ```
+//! $ cargo install cg-local-rs
+//! ```
+//!
+//! ### From the prebuilt release
+//!
+//! Download the latest release
+//! https://github.com/e-max/cg-local-rs/releases
+//!
+//!
+//!
+//! ## Usage
+//! First, you need to install an extension for your browser [Firefox](https://addons.mozilla.org/en-US/firefox/addon/cg-local/), [Chrome](https://chrome.google.com/webstore/detail/cg-local/ihakjfajoihlncbnggmcmmeabclpfdgo).
+//!
+//!
+//! Then you need to choose a local file you want to synchronize with CodiGame and pass the name to **cg-local--rs**
+//! ```
+//! $ cg-local-rs ./src/main.rs
+//! ```
+//! And finally you need to connect to this app from your CodinGame IDE. You can do it on a page with a pazzle
+//!
+//!
+//! That's all!  All changes you make in your file will be immediately uploaded to CodinGame IDE.
+//!
+//! We consider your local file state superior to CodinGame IDE state and sync only in one direction - from your local file to CodinGame IDE.
+//!
+//! There are two exceptions:
+//! * if the local file is empty when you run the tool, it will download state from CodinGame IDE.
+//! * when you start the tool with a flag **--force-first-download**
+//!
+//!
+//! I use it mostly with Firefox extension and it works pretty well. If you experience any issue, I'll appreciate if you create an issue.
+
 use futures::TryFutureExt;
 use futures::{pin_mut, select, try_join, FutureExt, Sink, SinkExt, Stream, StreamExt};
 use log::{self, debug, error, info, warn};
@@ -19,6 +69,7 @@ use tokio_tungstenite::accept_async;
 use tungstenite::protocol::Message;
 use tungstenite::Error as WsError;
 
+#[doc(hidden)]
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "action", content = "payload")]
 enum Msg {
@@ -40,12 +91,14 @@ enum Msg {
     UpdateCode { code: String, play: bool },
 }
 
+#[doc(hidden)]
 #[derive(PartialEq, Clone, Debug)]
 struct Question {
     question_id: u32,
     title: String,
 }
 
+#[doc(hidden)]
 #[derive(Clone)]
 struct Monitor {
     path: PathBuf,
@@ -54,7 +107,7 @@ struct Monitor {
     force_first_download: bool,
 }
 
-/// A basic example
+#[doc(hidden)]
 #[derive(StructOpt, Debug)]
 #[structopt(name = "basic")]
 struct Opt {
@@ -71,6 +124,7 @@ struct Opt {
     file: PathBuf,
 }
 
+#[doc(hidden)]
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let opt = Opt::from_args();
@@ -122,6 +176,7 @@ async fn main() -> Result<(), Error> {
     Ok(())
 }
 
+#[doc(hidden)]
 fn monitor_file<P: AsRef<Path> + Clone>(
     path: P,
     bcast: broadcast::Sender<()>,
@@ -178,6 +233,7 @@ fn monitor_file<P: AsRef<Path> + Clone>(
     }
 }
 
+#[doc(hidden)]
 async fn accept_connection(stream: TcpStream, monitor: Arc<RwLock<Monitor>>) -> Result<(), Error> {
     let addr = stream.peer_addr()?;
     debug!("addr {}", addr);
@@ -232,6 +288,7 @@ async fn accept_connection(stream: TcpStream, monitor: Arc<RwLock<Monitor>>) -> 
     .map(|_| ())
 }
 
+#[doc(hidden)]
 async fn handle_outgoing<S>(mut rx: mpsc::Receiver<Msg>, mut writer: S) -> Result<(), Error>
 where
     S: Sink<Message> + Unpin,
@@ -248,6 +305,7 @@ where
     Ok(())
 }
 
+#[doc(hidden)]
 async fn handle_incoming<S>(
     mut tx: mpsc::Sender<Msg>,
     mut reader: S,
@@ -267,6 +325,7 @@ where
     Ok(())
 }
 
+#[doc(hidden)]
 async fn handle_message(
     tx: &mut mpsc::Sender<Msg>,
     s: &str,
@@ -284,6 +343,7 @@ async fn handle_message(
     }
 }
 
+#[doc(hidden)]
 async fn handle_code(code: &str, monitor: Arc<RwLock<Monitor>>) -> Result<(), Error> {
     let mut monitor = monitor.write().await;
     let mdata = fs::metadata(&monitor.path)?;
@@ -297,6 +357,7 @@ async fn handle_code(code: &str, monitor: Arc<RwLock<Monitor>>) -> Result<(), Er
     Ok(())
 }
 
+#[doc(hidden)]
 async fn handle_details(
     title: &str,
     question_id: u32,
@@ -322,6 +383,7 @@ async fn handle_details(
     tx.send(Msg::AppReady {}).await.map_err(|e| e.into())
 }
 
+#[doc(hidden)]
 #[derive(Debug)]
 enum Error {
     WebSocket(WsError),
